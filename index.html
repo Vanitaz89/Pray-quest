@@ -1,0 +1,232 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Pyra Quest</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101b25;color:#fff;font-family:monospace;text-align:center;overscroll-behavior:none}
+header{background:#182b38;padding:9px;font-weight:bold;color:#f9d978}
+#hud{padding:7px;background:#263b42}
+canvas{display:block;width:min(100vw,650px);height:auto;aspect-ratio:16/10;margin:auto;image-rendering:pixelated;background:#49834b;touch-action:none}
+#message{min-height:35px;padding:8px;color:#ffe6a0}
+#controls{display:flex;justify-content:space-around;align-items:center;max-width:550px;margin:5px auto}
+#pad{display:grid;grid-template-columns:repeat(3,55px);gap:3px}
+button{background:#354d56;color:white;border:2px solid #9db9b1;border-radius:12px;min-height:49px;font-size:19px;touch-action:none}
+button:active{background:#628a78}
+#attack{background:#a65340;border-radius:50%;width:75px;height:75px}
+#quest{display:none;position:fixed;inset:0;background:#09161deF;z-index:5;overflow:auto;padding:22px}
+#quest article{max-width:500px;margin:20px auto;background:#263e46;border:3px solid #d9b36d;border-radius:12px;padding:20px}
+textarea{width:100%;height:105px;background:#111e27;color:#9df4a8;font:16px monospace;padding:12px}
+.action{background:#367c4b;padding:8px 20px;margin:7px}
+#output{white-space:pre-wrap;color:#ffdf88}
+small{color:#bacfc7}
+</style>
+</head>
+<body>
+<header>⚔️ PYRA QUEST: THE BROKEN RUNES ⚔️</header>
+<div id="hud">❤️ <span id="hp">5</span> | 💎 <span id="coins">0</span> | Level <span id="level">1</span> | XP <span id="xp">0</span></div>
+<canvas id="game" width="640" height="400"></canvas>
+<div id="message">Explore the kingdom. Find the glowing rune!</div>
+<div id="controls">
+<div id="pad">
+<span></span><button data-dir="up">▲</button><span></span>
+<button data-dir="left">◀</button><button data-dir="down">▼</button><button data-dir="right">▶</button>
+</div>
+<button id="attack">⚔️</button>
+<button id="interact">✨ Talk</button>
+</div>
+<small>Move with the arrows. Attack slimes. Touch a rune to learn Python.</small>
+<div id="quest">
+<article>
+<h2 id="qtitle">Ancient Rune</h2>
+<p id="qtext"></p>
+<textarea id="code" spellcheck="false"></textarea>
+<p id="output"></p>
+<button class="action" id="run">▶ Run Code</button>
+<button id="close">Close</button>
+</article>
+</div>
+<script>
+"use strict";
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const $=id=>document.getElementById(id);
+const W=640,H=400;
+const quests=[
+{title:"Rune of Words",text:"Print Hello, Pyra!",start:'print("Hello, Pyra!")',answer:"Hello, Pyra!"},
+{title:"Rune of Variables",text:"Create a variable named gold with value 10.",start:"gold = 10",check:s=>/\bgold\s*=\s*10\b/.test(s)},
+{title:"Rune of Numbers",text:"Print the result of 5 + 7.",start:"print(5 + 7)",answer:"12"},
+{title:"Rune of Lists",text:"Create a list named items containing sword and shield.",start:'items = ["sword", "shield"]',check:s=>/items\s*=\s*\[\s*["']sword["']\s*,\s*["']shield["']\s*\]/.test(s)},
+{title:"Rune of Loops",text:"Use a loop to print 0, 1, 2.",start:"for i in range(3):\n    print(i)",check:s=>/for\s+\w+\s+in\s+range\(3\)\s*:/.test(s)&&/print\(/.test(s)},
+{title:"Rune of Functions",text:"Define a function named greet.",start:"def greet():\n    print('Hello')",check:s=>/def\s+greet\s*\(\s*\)\s*:/.test(s)}
+];
+let save={};
+try{save=JSON.parse(localStorage.getItem("pyra-save")||"{}")}catch(e){}
+const p={x:80,y:200,hp:5,coins:save.coins||0,xp:save.xp||0,done:save.done||[]};
+const runes=quests.map((q,i)=>({x:180+i*190,y:i%2?300:120,id:i}));
+const trees=[];
+for(let i=0;i<85;i++){
+let x=(i*173+51)%1300,y=(i*97+33)%780;
+if(Math.hypot(x-80,y-200)>100)trees.push({x,y});
+}
+const slimes=[
+{x:320,y:210,hp:3,home:320},
+{x:650,y:350,hp:3,home:650},
+{x:1050,y:170,hp:3,home:1050}
+];
+let keys={},active=-1,lastHit=0,invincible=0,frame=0;
+function persist(){
+try{localStorage.setItem("pyra-save",JSON.stringify({coins:p.coins,xp:p.xp,done:p.done}))}catch(e){}
+}
+function hud(){
+$("hp").textContent=p.hp;
+$("coins").textContent=p.coins;
+$("xp").textContent=p.xp;
+$("level").textContent=1+Math.floor(p.xp/150);
+}
+function msg(t){$("message").textContent=t}
+function rect(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(Math.round(x),Math.round(y),w,h)}
+function draw(){
+frame++;
+const camX=Math.max(0,Math.min(660,p.x-320));
+const camY=Math.max(0,Math.min(400,p.y-200));
+ctx.save();ctx.translate(-camX,-camY);
+rect(0,0,1300,800,"#5b994f");
+for(let y=0;y<800;y+=40)for(let x=0;x<1300;x+=40){
+rect(x+7,y+8,5,5,(x+y)%80?"#6aaa55":"#8ab85e");
+}
+rect(570,0,95,800,"#428fbd");
+for(let y=0;y<800;y+=40)rect(590,y+frame%40,30,5,"#9ed6e5");
+rect(565,370,105,65,"#96724d");
+for(let x=570;x<665;x+=20)rect(x,370,6,65,"#d9b377");
+rect(1100,80,140,140,"#8c8c9d");
+rect(1120,45,35,55,"#69728e");
+rect(1190,45,35,55,"#69728e");
+rect(1155,150,35,70,"#423b56");
+for(const t of trees){
+rect(t.x-7,t.y,14,20,"#735334");
+rect(t.x-21,t.y-25,42,38,"#245b36");
+rect(t.x-13,t.y-32,26,25,"#35804a");
+}
+for(const r of runes){
+rect(r.x-15,r.y-15,30,30,p.done.includes(r.id)?"#7b9e92":"#f6d35d");
+rect(r.x-9,r.y-9,18,18,p.done.includes(r.id)?"#3d6457":"#54e9e9");
+ctx.fillStyle="#102c38";ctx.font="bold 15px monospace";
+ctx.fillText(r.id+1,r.x-5,r.y+5);
+}
+for(const s of slimes)if(s.hp>0){
+rect(s.x-14,s.y-10,28,24,"#365bb0");
+rect(s.x-10,s.y-17,20,10,"#567ddd");
+rect(s.x-7,s.y-5,4,4,"white");
+rect(s.x+4,s.y-5,4,4,"white");
+}
+if(invincible===0||frame%8<4){
+rect(p.x-10,p.y-7,20,25,"#3d7045");
+rect(p.x-11,p.y-18,22,15,"#d5a066");
+rect(p.x-13,p.y-23,26,9,"#2a713d");
+rect(p.x+4,p.y-12,4,4,"#172d38");
+rect(p.x-15,p.y+7,9,12,"#684b34");
+rect(p.x+6,p.y+7,9,12,"#684b34");
+}
+ctx.restore();
+hud();
+}
+function update(){
+if(active!==-1)return;
+let dx=Number(!!keys.right)-Number(!!keys.left);
+let dy=Number(!!keys.down)-Number(!!keys.up);
+if(dx||dy){
+let len=Math.hypot(dx,dy);
+let nx=Math.max(15,Math.min(1285,p.x+dx/len*2.8));
+let ny=Math.max(20,Math.min(780,p.y+dy/len*2.8));
+if(!(nx>570&&nx<665&&(ny<370||ny>435))){p.x=nx;p.y=ny;}
+}
+if(invincible>0)invincible--;
+for(const s of slimes)if(s.hp>0){
+s.x+=Math.sin(frame/45+s.home)*0.5;
+if(Math.hypot(p.x-s.x,p.y-s.y)<23&&invincible===0){
+p.hp--;invincible=75;msg("A slime hit you!");
+if(p.hp<=0){p.hp=5;p.x=80;p.y=200;msg("You awaken back in the village.");}
+}
+}
+for(const r of runes)if(Math.hypot(p.x-r.x,p.y-r.y)<33&&!p.done.includes(r.id)){
+msg("Ancient rune nearby! Tap ✨ Talk.");
+break;
+}
+}
+function interact(){
+let nearest=null,dist=55;
+for(const r of runes){
+let d=Math.hypot(p.x-r.x,p.y-r.y);
+if(d<dist){nearest=r;dist=d;}
+}
+if(nearest){
+active=nearest.id;
+$("qtitle").textContent=quests[active].title;
+$("qtext").textContent=quests[active].text;
+$("code").value=quests[active].start;
+$("output").textContent="";
+$("quest").style.display="block";
+}else msg("Nothing nearby to interact with.");
+}
+function attack(){
+if(Date.now()-lastHit<300)return;
+lastHit=Date.now();
+for(const s of slimes)if(s.hp>0&&Math.hypot(p.x-s.x,p.y-s.y)<65){
+s.hp--;msg("Sword strike!");
+if(s.hp===0){p.coins+=10;p.xp+=20;msg("Slime defeated! +20 XP, +10 gems.");persist();}
+}
+}
+function checkQuest(q,s){
+s=s.trim();
+if(q.check)return q.check(s);
+let m=s.match(/^print\s*\(\s*(.*?)\s*\)\s*;?$/s);
+if(!m)return false;
+let value=m[1].trim();
+if(/^["'].*["']$/.test(value))return value.slice(1,-1)===q.answer;
+if(/^[0-9+\-*/ ().]+$/.test(value)){
+try{
+let nums=value.match(/^\s*(\d+)\s*\+\s*(\d+)\s*$/);
+return !!nums&&String(Number(nums[1])+Number(nums[2]))===q.answer;
+}catch(e){return false;}
+}
+return false;
+}
+$("run").onclick=()=>{
+if(active<0)return;
+const q=quests[active],s=$("code").value;
+if(checkQuest(q,s)){
+if(!p.done.includes(active)){
+p.done.push(active);p.xp+=100;p.coins+=25;persist();
+}
+$("output").textContent="✓ Rune restored! +100 XP, +25 gems.";
+msg("The magic of Pyra grows stronger!");
+}else $("output").textContent="Not quite! Check the code and try again.";
+};
+$("close").onclick=()=>{$("quest").style.display="none";active=-1;};
+$("interact").onclick=interact;
+$("attack").onclick=attack;
+document.querySelectorAll("[data-dir]").forEach(b=>{
+let d=b.dataset.dir;
+b.addEventListener("pointerdown",e=>{e.preventDefault();keys[d]=true;b.setPointerCapture(e.pointerId)});
+for(const event of ["pointerup","pointercancel","lostpointercapture"])
+b.addEventListener(event,()=>{keys[d]=false});
+});
+document.addEventListener("keydown",e=>{
+const map={ArrowUp:"up",ArrowDown:"down",ArrowLeft:"left",ArrowRight:"right"};
+if(map[e.key]){keys[map[e.key]]=true;e.preventDefault();}
+if(e.key===" "&&active===-1)attack();
+if(e.key==="e"&&active===-1)interact();
+});
+document.addEventListener("keyup",e=>{
+const map={ArrowUp:"up",ArrowDown:"down",ArrowLeft:"left",ArrowRight:"right"};
+if(map[e.key])keys[map[e.key]]=false;
+});
+function loop(){update();draw();requestAnimationFrame(loop);}
+hud();loop();
+</script>
+</body>
+</html>
